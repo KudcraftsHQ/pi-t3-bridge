@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { buildAboutPayload, renderAboutText } from "../src/about.ts";
 import { toolKind, toolTitle } from "../src/mapping.ts";
 import { buildEffortConfigOption, normalizeEffort } from "../src/effort.ts";
+import { extractPromptImages, extractPromptText } from "../src/agent.ts";
 import { StdioConnection } from "../src/jsonrpc.ts";
 import { PassThrough } from "node:stream";
 
@@ -166,5 +167,46 @@ describe("settle fan-out", () => {
 
     expect(await Promise.all([a, b])).toEqual(["a", "b"]);
     expect(waiters).toHaveLength(0);
+  });
+});
+
+describe("prompt content blocks", () => {
+  /**
+   * The shape T3's CursorAdapter actually sends: the user's text, image
+   * attachments as base64, and a trailing runtime-instructions text block.
+   * Generic (non-image) files are deliberately not sent as blocks — T3 puts
+   * their path in the text and the agent reads them with its own tools.
+   */
+  const t3Prompt = [
+    { type: "text", text: "what colour is this?" },
+    { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+    { type: "text", text: "<runtime_info>…</runtime_info>" },
+  ];
+
+  test("joins every text block, including T3's runtime instructions", () => {
+    expect(extractPromptText(t3Prompt)).toBe(
+      "what colour is this?\n<runtime_info>…</runtime_info>",
+    );
+  });
+
+  test("maps images to pi's ImageContent, type field included", () => {
+    // pi's ImageContent declares `type` as required. DeepSeek happened to
+    // tolerate its absence; that is not something to rely on.
+    expect(extractPromptImages(t3Prompt)).toEqual([
+      { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+    ]);
+  });
+
+  test("defaults a missing mimeType rather than sending undefined", () => {
+    expect(extractPromptImages([{ type: "image", data: "eA==" }])[0]?.mimeType).toBe("image/png");
+  });
+
+  test("ignores block types T3 does not send and pi cannot take", () => {
+    const exotic = [
+      { type: "audio", data: "eA==", mimeType: "audio/wav" },
+      { type: "resource_link", uri: "file:///tmp/x.txt", name: "x.txt" },
+    ];
+    expect(extractPromptText(exotic)).toBe("");
+    expect(extractPromptImages(exotic)).toEqual([]);
   });
 });

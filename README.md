@@ -106,6 +106,26 @@ Two things are worth knowing:
 
 Models that do not reason get no dropdown at all.
 
+## Images and files
+
+Both work, and they arrive by different routes.
+
+**Images** come through as ACP `image` blocks — T3 base64-encodes the attachment
+and the bridge hands it to pi as `ImageContent`. Verified against
+`deepseek-v4-flash-vision-exp`: a solid purple PNG reads back "Purple", an orange
+one "Orange".
+
+**Generic files never become blocks at all.** T3's Cursor adapter skips non-image
+attachments outright — *"Cursor ingests images only. Generic files reach the agent
+through the path line ProviderService puts in the prompt"* — so the agent receives
+a path and opens it with pi's own `read` tool. That means `@`-mentioned files and
+dropped files work without the bridge doing anything, and they are not limited by
+what ACP can carry.
+
+One consequence worth knowing: because the file is read by a tool rather than
+embedded, a file attachment costs a tool round-trip and is subject to approval in
+modes where tools require it.
+
 ## Extensions
 
 **Discovery is off by default.** pi's extension ecosystem is written for its

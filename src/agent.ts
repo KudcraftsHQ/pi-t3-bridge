@@ -341,7 +341,7 @@ function requireSession(session: ActiveSession | null, sessionId: unknown): Acti
 }
 
 /** ACP delivers a prompt as content blocks; pi takes a string plus images. */
-function extractPromptText(prompt: unknown): string {
+export function extractPromptText(prompt: unknown): string {
   if (!Array.isArray(prompt)) return typeof prompt === "string" ? prompt : "";
   return prompt
     .filter((block: any) => block?.type === "text" && typeof block.text === "string")
@@ -349,11 +349,20 @@ function extractPromptText(prompt: unknown): string {
     .join("\n");
 }
 
-function extractPromptImages(prompt: unknown): Array<{ data: string; mimeType: string }> {
+export function extractPromptImages(
+  prompt: unknown,
+): Array<{ type: "image"; data: string; mimeType: string }> {
   if (!Array.isArray(prompt)) return [];
   return prompt
     .filter((block: any) => block?.type === "image" && typeof block.data === "string")
-    .map((block: any) => ({ data: block.data, mimeType: block.mimeType ?? "image/png" }));
+    .map((block: any) => ({
+      // pi's ImageContent declares `type` as required. Omitting it happened to
+      // work against DeepSeek, but that is a provider tolerating a malformed
+      // block, not a contract.
+      type: "image" as const,
+      data: block.data,
+      mimeType: block.mimeType ?? "image/png",
+    }));
 }
 
 /**
