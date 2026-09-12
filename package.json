@@ -1,0 +1,20 @@
+{
+  "name": "pi-t3-bridge",
+  "version": "0.1.0",
+  "description": "ACP bridge that lets the pi coding agent run as a native provider inside T3 Code",
+  "type": "module",
+  "bin": { "pi-t3-bridge": "./bin/pi-t3-bridge" },
+  "scripts": {
+    "build": "bun build src/main.ts --target=node --outfile=dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}

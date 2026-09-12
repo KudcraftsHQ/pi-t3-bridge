@@ -1,0 +1,34 @@
+#!/bin/sh
+# Launcher for the pi-t3-bridge ACP agent.
+#
+# T3 Code spawns the provider binary directly rather than through a login
+# shell, so PATH here is whatever the T3 server process inherited — often
+# without ~/.local/bin. bun is therefore resolved explicitly instead of being
+# assumed to be on PATH.
+
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+root=$(cd "$(dirname "$self")/.." && pwd)
+
+find_bun() {
+  if [ -n "$PI_T3_BRIDGE_BUN" ]; then printf '%s' "$PI_T3_BRIDGE_BUN"; return; fi
+  if command -v bun >/dev/null 2>&1; then command -v bun; return; fi
+  for candidate in \
+    "$HOME/.bun/bin/bun" \
+    "$HOME/.local/bin/bun" \
+    /opt/homebrew/bin/bun \
+    /usr/local/bin/bun
+  do
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return; }
+  done
+  echo "pi-t3-bridge: could not find the bun runtime; set PI_T3_BRIDGE_BUN" >&2
+  exit 127
+}
+
+exec "$(find_bun)" "$root/src/main.ts" "$@"
