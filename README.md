@@ -133,8 +133,25 @@ session, streams updates, and answers permission requests.
 Working: handshake, model discovery and selection, prompt streaming, thinking
 chunks, tool calls with kinds and locations, and approvals in both directions.
 
-Not implemented: `session/load` (no session resumption), ACP terminal methods,
-`fs/*` client delegation (pi uses its own file tools), and MCP server pass-through.
+Session resumption works: T3 calls `session/load` whenever a thread reopens, and
+the bridge maps the ACP session id back onto its pi session file via a small store
+at `~/.pi/t3-bridge-sessions.json` (override with `PI_T3_BRIDGE_STATE`). T3 spawns a
+fresh provider process per session runtime, so that mapping has to survive on disk.
+If the lookup misses, it falls back to the most recent pi session in the same
+directory.
+
+Not implemented: ACP terminal methods, `fs/*` client delegation (pi uses its own
+file tools), and MCP server pass-through.
+
+## Debugging
+
+Set `PI_T3_BRIDGE_LOG` to a path and every invocation records its argv, cwd and
+parent pid. T3 spawns the binary itself, so this is the only way to see what it
+was actually asked to do:
+
+```json
+"environment": [{ "name": "PI_T3_BRIDGE_LOG", "value": "/tmp/pi-t3-bridge.log" }]
+```
 
 ## Licence
 

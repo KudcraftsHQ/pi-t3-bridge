@@ -16,11 +16,32 @@
  */
 import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 
+import { appendFileSync } from "node:fs";
+
 import { buildAboutPayload, renderAboutText } from "./about.ts";
 import { runAgent } from "./agent.ts";
 
+/**
+ * Optional invocation trace. T3 spawns this binary itself, so when a probe
+ * misbehaves there is otherwise no way to see what argv, cwd and environment
+ * it was actually given. Set PI_T3_BRIDGE_LOG to a path to record them.
+ */
+function trace(argv: ReadonlyArray<string>): void {
+  const target = process.env.PI_T3_BRIDGE_LOG;
+  if (!target) return;
+  try {
+    appendFileSync(
+      target,
+      `${new Date().toISOString()} argv=${JSON.stringify(argv)} cwd=${process.cwd()} ppid=${process.ppid}\n`,
+    );
+  } catch {
+    // Tracing must never be the reason a probe fails.
+  }
+}
+
 function main(): void {
   const argv = process.argv.slice(2);
+  trace(argv);
 
   if (argv.includes("about")) {
     const payload = buildAboutPayload(PI_VERSION);

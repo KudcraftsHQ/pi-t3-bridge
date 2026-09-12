@@ -16,6 +16,7 @@ import {
 
 import { buildEffortConfigOption, EFFORT_CONFIG_ID, DEFAULT_EFFORT, normalizeEffort } from "./effort.ts";
 import { StdioConnection } from "./jsonrpc.ts";
+import { recall, remember } from "./sessionStore.ts";
 import { resultContent, toolKind, toolLocations, toolTitle } from "./mapping.ts";
 
 const PROTOCOL_VERSION = 1;
@@ -65,7 +66,7 @@ export function runAgent(options: AgentOptions): void {
   connection.on("initialize", () => ({
     protocolVersion: PROTOCOL_VERSION,
     agentCapabilities: {
-      loadSession: false,
+      loadSession: true,
       promptCapabilities: { image: true, embeddedContext: true },
     },
     authMethods: [
@@ -80,11 +81,13 @@ export function runAgent(options: AgentOptions): void {
 
   // ── Sessions ─────────────────────────────────────────────────────────
 
-  connection.on("session/new", async (params: any) => {
-    const cwd: string = params?.cwd ?? options.cwd;
+  /**
+   * Build a pi session and adopt it as the active one. `sessionManager`
+   * decides whether this is a fresh session or a resumed one; everything else
+   * — the approval hook, event forwarding, effort — is identical either way.
+   */
+  async function openSession(id: string, cwd: string, sessionManager: any): Promise<void> {
     modelRuntime ??= await ModelRuntime.create();
-
-    const id = `pi-${Date.now().toString(36)}`;
     const approvals = new ApprovalBroker(id, connection, options.autoApprove);
 
     // Discovered extensions are deliberately disabled. pi's extension
@@ -107,19 +110,54 @@ export function runAgent(options: AgentOptions): void {
       cwd,
       modelRuntime,
       resourceLoader,
-      sessionManager: SessionManager.create(cwd),
+      sessionManager,
       ...(requestedModel ? { model: await resolveModel(requestedModel) } : {}),
     });
+
+    created.session.setThinkingLevel(requestedEffort as any);
 
     const unsubscribe = created.session.subscribe((event: any) =>
       forwardPiEvent(id, event, update),
     );
 
-    created.session.setThinkingLevel(requestedEffort as any);
-
+    session?.unsubscribe();
     session = { id, piSession: created.session, unsubscribe };
+
+    const sessionFile = sessionManager.getSessionFile?.();
+    if (sessionFile) remember(id, sessionFile, cwd);
+  }
+
+  connection.on("session/new", async (params: any) => {
+    const cwd: string = params?.cwd ?? options.cwd;
+    const id = `pi-${Date.now().toString(36)}`;
+    await openSession(id, cwd, SessionManager.create(cwd));
     return {
       sessionId: id,
+      modes: null,
+      configOptions: [buildEffortConfigOption(activeEffort())],
+    };
+  });
+
+  /**
+   * T3 calls this whenever a thread resumes, so refusing it breaks every
+   * reopened thread with "Method not found: session/load".
+   *
+   * The session id is one the bridge issued earlier, in an earlier process, so
+   * it is resolved through the on-disk store. When that lookup misses — a
+   * store wiped, or a thread predating it — falling back to the most recent pi
+   * session in the same directory is a better answer than an empty one.
+   */
+  connection.on("session/load", async (params: any) => {
+    const cwd: string = params?.cwd ?? options.cwd;
+    const id: string = params?.sessionId;
+    const known = recall(id);
+
+    const sessionManager = known?.sessionFile
+      ? SessionManager.open(known.sessionFile, undefined, cwd)
+      : SessionManager.continueRecent(cwd);
+
+    await openSession(id, cwd, sessionManager);
+    return {
       modes: null,
       configOptions: [buildEffortConfigOption(activeEffort())],
     };
