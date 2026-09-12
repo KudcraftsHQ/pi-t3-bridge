@@ -14,6 +14,7 @@ import {
   VERSION as PI_VERSION,
 } from "@earendil-works/pi-coding-agent";
 
+import { buildEffortConfigOption, EFFORT_CONFIG_ID, DEFAULT_EFFORT, normalizeEffort } from "./effort.ts";
 import { StdioConnection } from "./jsonrpc.ts";
 import { resultContent, toolKind, toolLocations, toolTitle } from "./mapping.ts";
 
@@ -45,6 +46,7 @@ export function runAgent(options: AgentOptions): void {
   let registry: ModelRegistry | null = null;
   let session: ActiveSession | null = null;
   let requestedModel: string | null = null;
+  let requestedEffort: string = DEFAULT_EFFORT;
 
   const getRegistry = async (): Promise<ModelRegistry> => {
     if (!registry) {
@@ -113,8 +115,14 @@ export function runAgent(options: AgentOptions): void {
       forwardPiEvent(id, event, update),
     );
 
+    created.session.setThinkingLevel(requestedEffort as any);
+
     session = { id, piSession: created.session, unsubscribe };
-    return { sessionId: id, modes: null, configOptions: [] };
+    return {
+      sessionId: id,
+      modes: null,
+      configOptions: [buildEffortConfigOption(activeEffort())],
+    };
   });
 
   connection.on("session/prompt", async (params: any) => {
@@ -158,9 +166,27 @@ export function runAgent(options: AgentOptions): void {
     return {};
   });
 
-  // No configurable options are surfaced; T3 tolerates an empty list and
-  // simply produces no config updates.
-  connection.on("session/set_config_option", () => ({ configOptions: [] }));
+  connection.on("session/set_config_option", (params: any) => {
+    if (params?.configId === EFFORT_CONFIG_ID) {
+      const level = normalizeEffort(params?.value);
+      if (level) {
+        requestedEffort = level;
+        session?.piSession.setThinkingLevel(level);
+      }
+    }
+    return { configOptions: [buildEffortConfigOption(activeEffort())] };
+  });
+
+  /**
+   * The level pi actually settled on, which is not always the one asked for:
+   * pi clamps to what the active model supports, so requesting "xhigh" on a
+   * model that only does low/high/max lands on "max". Reporting the clamped
+   * value back keeps T3's dropdown honest about what is really running.
+   */
+  function activeEffort(): string {
+    const actual = session?.piSession?.thinkingLevel;
+    return normalizeEffort(actual) ?? requestedEffort;
+  }
 
   /**
    * Cursor-proprietary ACP extension that T3 calls during the status probe
@@ -175,7 +201,9 @@ export function runAgent(options: AgentOptions): void {
       models: available.map((model) => ({
         value: `${model.provider}/${model.id}`,
         name: `${model.name} (${model.provider})`,
-        configOptions: [],
+        // Only reasoning models get the dropdown; for the rest T3 correctly
+        // shows no effort control at all.
+        configOptions: model.reasoning ? [buildEffortConfigOption()] : [],
       })),
     };
   });

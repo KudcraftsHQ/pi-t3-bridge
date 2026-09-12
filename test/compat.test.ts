@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 
 import { buildAboutPayload, renderAboutText } from "../src/about.ts";
 import { toolKind, toolTitle } from "../src/mapping.ts";
+import { buildEffortConfigOption, normalizeEffort } from "../src/effort.ts";
 import { StdioConnection } from "../src/jsonrpc.ts";
 import { PassThrough } from "node:stream";
 
@@ -87,5 +88,44 @@ describe("jsonrpc framing", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(seen).toEqual(["a\u2028b"]);
+  });
+});
+
+describe("reasoning effort", () => {
+  /** CursorProvider.ts: isCursorEffortConfigOption */
+  function isCursorEffortConfigOption(option: { id: string; name: string }): boolean {
+    const id = option.id.trim().toLowerCase();
+    const name = option.name.trim().toLowerCase();
+    return (
+      id === "effort" ||
+      id === "reasoning" ||
+      name === "effort" ||
+      name === "reasoning" ||
+      name.includes("effort") ||
+      name.includes("reasoning")
+    );
+  }
+
+  test("the config option is one T3 recognises as the effort selector", () => {
+    const option = buildEffortConfigOption();
+    expect(isCursorEffortConfigOption(option)).toBe(true);
+    expect(option.type).toBe("select");
+  });
+
+  test("every offered level survives T3's value normalizer", () => {
+    // A level T3 discards would render as a dropdown entry that does nothing.
+    for (const level of buildEffortConfigOption().options) {
+      expect(normalizeEffort(level.value)).toBe(level.value as any);
+    }
+  });
+
+  test("accepts T3's alternate spellings of extra-high", () => {
+    expect(normalizeEffort("extra-high")).toBe("xhigh");
+    expect(normalizeEffort("Extra High")).toBe("xhigh");
+  });
+
+  test("rejects pi levels T3 cannot round-trip", () => {
+    expect(normalizeEffort("off")).toBeUndefined();
+    expect(normalizeEffort("minimal")).toBeUndefined();
   });
 });

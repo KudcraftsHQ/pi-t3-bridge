@@ -87,6 +87,25 @@ update first.
 > and writes a non-`lab` channel to `~/.cursor/cli-config.json`, both the real
 > Cursor instance and this bridge stop working at once.
 
+## Reasoning effort
+
+T3's effort dropdown is not something T3 invents — it builds the control from the
+`configOptions` an agent reports, and drives selections back through
+`session/set_config_option`. The bridge reports an `effort` option, so the dropdown
+appears and maps onto pi's thinking level.
+
+Two things are worth knowing:
+
+- **Only five levels are offered.** pi has `off` and `minimal` as well, but T3's
+  value normalizer discards anything outside low / medium / high / xhigh / max, so
+  offering them would produce dropdown entries that silently do nothing.
+- **pi clamps to the model.** `deepseek-v4-flash` supports only low / high / max, so
+  asking for `xhigh` lands on `max` and `medium` lands on `high`. The bridge reports
+  the *clamped* value back, so the dropdown shows what is actually running rather
+  than what was requested.
+
+Models that do not reason get no dropdown at all.
+
 ## What pi loses
 
 **Discovered pi extensions are disabled.** pi's extension ecosystem is written for
