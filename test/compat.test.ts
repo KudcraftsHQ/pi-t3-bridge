@@ -129,3 +129,42 @@ describe("reasoning effort", () => {
     expect(normalizeEffort("minimal")).toBeUndefined();
   });
 });
+
+describe("settle fan-out", () => {
+  /**
+   * pi dispatches session events with `for (const l of this._eventListeners)`
+   * over the live array (agent-session.js). This reproduces the consequence:
+   * a listener that removes itself mid-dispatch shifts the array and the
+   * iterator skips the *next* listener.
+   *
+   * The bridge used to add one such listener per prompt, so a steering prompt
+   * — which subscribes after the one already in flight — never saw
+   * `agent_settled` and its ACP request hung forever.
+   */
+  test("self-removing listeners skip the next one, which is why we do not use them", () => {
+    const listeners: Array<(e: string) => void> = [];
+    const seen: string[] = [];
+
+    const first = (e: string) => {
+      seen.push(`first:${e}`);
+      listeners.splice(listeners.indexOf(first), 1);
+    };
+    listeners.push(first);
+    listeners.push((e) => seen.push(`second:${e}`));
+
+    for (const l of listeners) l("settled");
+
+    expect(seen).toEqual(["first:settled"]); // second never ran
+  });
+
+  test("a waiter list resolves every waiter, whenever it was added", async () => {
+    const waiters: Array<() => void> = [];
+    const a = new Promise<string>((resolve) => waiters.push(() => resolve("a")));
+    const b = new Promise<string>((resolve) => waiters.push(() => resolve("b")));
+
+    for (const resolve of waiters.splice(0)) resolve();
+
+    expect(await Promise.all([a, b])).toEqual(["a", "b"]);
+    expect(waiters).toHaveLength(0);
+  });
+});

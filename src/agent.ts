@@ -22,6 +22,11 @@ import { resultContent, toolKind, toolLocations, toolTitle } from "./mapping.ts"
 
 const PROTOCOL_VERSION = 1;
 
+/** Stderr tracing, on when PI_T3_BRIDGE_DEBUG is set. Never touches stdout. */
+function dbg(message: string): void {
+  if (process.env.PI_T3_BRIDGE_DEBUG) process.stderr.write(`[dbg] ${message}\n`);
+}
+
 /**
  * T3 authenticates the Cursor driver with this method id
  * (`CursorAcpSupport.ts`: `authMethodId: "cursor_login"`). It must appear in
@@ -40,6 +45,8 @@ interface ActiveSession {
   id: string;
   piSession: any;
   unsubscribe: () => void;
+  /** Resolvers waiting for the next `agent_settled`. */
+  settleWaiters: Array<() => void>;
 }
 
 export function runAgent(options: AgentOptions): void {
@@ -49,6 +56,9 @@ export function runAgent(options: AgentOptions): void {
   let session: ActiveSession | null = null;
   let requestedModel: string | null = null;
   let requestedEffort: string = DEFAULT_EFFORT;
+  /** Prompts currently awaiting settle; >1 means the extra ones are steering. */
+  let promptsInFlight = 0;
+  let cancelled = false;
 
   const getRegistry = async (): Promise<ModelRegistry> => {
     if (!registry) {
@@ -118,12 +128,25 @@ export function runAgent(options: AgentOptions): void {
 
     created.session.setThinkingLevel(requestedEffort as any);
 
-    const unsubscribe = created.session.subscribe((event: any) =>
-      forwardPiEvent(id, event, update),
-    );
+    const settleWaiters: Array<() => void> = [];
+
+    // Exactly one subscription per session, for the life of the session.
+    //
+    // pi dispatches events with `for (const l of this._eventListeners)` over
+    // the live array, so a listener that unsubscribes itself mid-dispatch
+    // shifts the array and makes the iterator skip the *next* listener. A
+    // per-prompt listener that removed itself on `agent_settled` therefore
+    // silently swallowed the settle of whichever prompt subscribed after it —
+    // which is precisely a steering prompt, leaving it hanging forever.
+    const unsubscribe = created.session.subscribe((event: any) => {
+      forwardPiEvent(id, event, update);
+      if (event.type === "agent_settled") {
+        for (const resolve of settleWaiters.splice(0)) resolve();
+      }
+    });
 
     session?.unsubscribe();
-    session = { id, piSession: created.session, unsubscribe };
+    session = { id, piSession: created.session, unsubscribe, settleWaiters };
 
     const sessionFile = sessionManager.getSessionFile?.();
     if (sessionFile) remember(id, sessionFile, cwd);
@@ -170,23 +193,36 @@ export function runAgent(options: AgentOptions): void {
     const text = extractPromptText(params?.prompt);
     const images = extractPromptImages(params?.prompt);
 
-    const settled = new Promise<void>((resolve) => {
-      const off = active.piSession.subscribe((event: any) => {
-        if (event.type === "agent_settled") {
-          off();
-          resolve();
-        }
-      });
-    });
+    const settled = new Promise<void>((resolve) => active.settleWaiters.push(resolve));
 
-    await active.piSession.prompt(text, images.length > 0 ? { images } : undefined);
-    await settled;
+    const base: Record<string, unknown> = images.length > 0 ? { images } : {};
 
-    return { stopReason: "end_turn" };
+    // Steering: a prompt that arrives while a turn is still running. pi
+    // refuses it outright unless told how to queue it — "Agent is already
+    // processing. Specify streamingBehavior ('steer' or 'followUp')" — and
+    // that rejection is what T3 surfaces as "ACP transport operation failed".
+    //
+    // "steer" is the right mapping: ACP's model is that a mid-turn prompt
+    // redirects the current turn rather than waiting politely behind it.
+    promptsInFlight += 1;
+    try {
+      const options = promptsInFlight > 1 ? { ...base, streamingBehavior: "steer" } : base;
+      dbg(`prompt: inFlight=${promptsInFlight} steer=${!!options.streamingBehavior}`);
+      await promptWithSteerFallback(active.piSession, text, options);
+      dbg(`prompt: pi.prompt() returned (inFlight=${promptsInFlight})`);
+      await settled;
+      dbg(`prompt: settled (inFlight=${promptsInFlight})`);
+      return { stopReason: cancelled ? "cancelled" : "end_turn" };
+    } finally {
+      promptsInFlight -= 1;
+      if (promptsInFlight === 0) cancelled = false;
+    }
   });
 
   connection.on("session/cancel", async () => {
+    cancelled = true;
     await session?.piSession.abort();
+    return {};
   });
 
   connection.on("session/close", () => {
@@ -254,6 +290,27 @@ export function runAgent(options: AgentOptions): void {
     const provider = slug.slice(0, separator);
     const modelId = slug.slice(separator + 1);
     return (await getRegistry()).find(provider, modelId);
+  }
+}
+
+/**
+ * Prompt pi, retrying as a steer if it turns out a turn was already running.
+ *
+ * The in-flight counter is the intent, but it is only as good as its own
+ * bookkeeping — a turn can settle between the check and the call. pi's refusal
+ * is authoritative, so it is also treated as a signal rather than an error.
+ */
+async function promptWithSteerFallback(
+  piSession: any,
+  text: string,
+  options: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await piSession.prompt(text, Object.keys(options).length > 0 ? options : undefined);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/already processing/i.test(message) || options.streamingBehavior) throw error;
+    await piSession.prompt(text, { ...options, streamingBehavior: "steer" });
   }
 }
 

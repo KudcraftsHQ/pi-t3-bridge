@@ -165,7 +165,24 @@ directory.
 Not implemented: ACP terminal methods, `fs/*` client delegation (pi uses its own
 file tools), and MCP server pass-through.
 
+## Steering
+
+Sending a message while a turn is still running is steering, and it needs two
+things that are easy to get wrong:
+
+- pi refuses a prompt during a turn unless told how to queue it
+  (`streamingBehavior: "steer" | "followUp"`). The bridge passes `"steer"`,
+  matching ACP's model that a mid-turn prompt redirects the turn.
+- **Never subscribe per prompt.** pi dispatches events with
+  `for (const l of this._eventListeners)` over the live array, so a listener that
+  unsubscribes itself mid-dispatch shifts the array and the iterator skips the next
+  listener. One subscription is held per session and prompts wait on a resolver
+  list instead.
+
 ## Debugging
+
+Set `PI_T3_BRIDGE_DEBUG=1` for stderr tracing of prompt lifecycle (stdout is the
+protocol channel and is never touched).
 
 Set `PI_T3_BRIDGE_LOG` to a path and every invocation records its argv, cwd and
 parent pid. T3 spawns the binary itself, so this is the only way to see what it
