@@ -34,6 +34,23 @@ function dbg(message: string): void {
  */
 const AUTH_METHOD_ID = "cursor_login";
 
+/**
+ * How a prompt that arrives mid-turn is queued.
+ *
+ * pi offers two behaviours: "steer" interrupts, delivering the message after
+ * the current tool batch and before the next LLM call; "followUp" waits for
+ * the turn to finish first.
+ *
+ * ACP cannot express the difference — `PromptRequest` is `{sessionId, prompt}`
+ * and carries no queueing field — and T3 only ever means steer: "A sendTurn
+ * while a prompt is in flight is a steer: the agent folds the new prompt into
+ * the ongoing work" (CursorAdapter.ts). So the choice cannot be made per
+ * message, only per provider instance.
+ */
+function steeringBehavior(): "steer" | "followUp" {
+  return process.env.PI_T3_BRIDGE_STEERING?.trim() === "followUp" ? "followUp" : "steer";
+}
+
 export interface AgentOptions {
   /** Working directory T3 launched us in; pi resolves project context from it. */
   cwd: string;
@@ -206,9 +223,10 @@ export function runAgent(options: AgentOptions): void {
     // redirects the current turn rather than waiting politely behind it.
     promptsInFlight += 1;
     try {
-      const options = promptsInFlight > 1 ? { ...base, streamingBehavior: "steer" } : base;
-      dbg(`prompt: inFlight=${promptsInFlight} steer=${!!options.streamingBehavior}`);
-      await promptWithSteerFallback(active.piSession, text, options);
+      const options =
+        promptsInFlight > 1 ? { ...base, streamingBehavior: steeringBehavior() } : base;
+      dbg(`prompt: inFlight=${promptsInFlight} queueing=${options.streamingBehavior ?? "none"}`);
+      await promptWithSteerFallback(active.piSession, text, options, steeringBehavior());
       dbg(`prompt: pi.prompt() returned (inFlight=${promptsInFlight})`);
       await settled;
       dbg(`prompt: settled (inFlight=${promptsInFlight})`);
@@ -304,13 +322,14 @@ async function promptWithSteerFallback(
   piSession: any,
   text: string,
   options: Record<string, unknown>,
+  fallbackBehavior: "steer" | "followUp" = "steer",
 ): Promise<void> {
   try {
     await piSession.prompt(text, Object.keys(options).length > 0 ? options : undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/already processing/i.test(message) || options.streamingBehavior) throw error;
-    await piSession.prompt(text, { ...options, streamingBehavior: "steer" });
+    await piSession.prompt(text, { ...options, streamingBehavior: fallbackBehavior });
   }
 }
 

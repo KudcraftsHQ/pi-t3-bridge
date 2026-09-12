@@ -171,13 +171,38 @@ Sending a message while a turn is still running is steering, and it needs two
 things that are easy to get wrong:
 
 - pi refuses a prompt during a turn unless told how to queue it
-  (`streamingBehavior: "steer" | "followUp"`). The bridge passes `"steer"`,
-  matching ACP's model that a mid-turn prompt redirects the turn.
+  (`streamingBehavior: "steer" | "followUp"`). The bridge passes `"steer"` by
+  default, matching what T3 means by a mid-turn message.
 - **Never subscribe per prompt.** pi dispatches events with
   `for (const l of this._eventListeners)` over the live array, so a listener that
   unsubscribes itself mid-dispatch shifts the array and the iterator skips the next
   listener. One subscription is held per session and prompts wait on a resolver
   list instead.
+
+### steer vs followUp
+
+pi supports both. **T3 can only ask for one of them**, so the choice is per
+instance rather than per message:
+
+```json
+"environment": [{ "name": "PI_T3_BRIDGE_STEERING", "value": "followUp" }]
+```
+
+| | behaviour |
+|---|---|
+| `steer` (default) | Delivered after the current tool batch, before the next LLM call — redirects the turn |
+| `followUp` | Waits for the turn to finish, then runs |
+
+The limitation is not the bridge's. ACP's `PromptRequest` is
+`{sessionId, prompt, messageId?, _meta?}` — it has no queueing field — and T3
+treats every mid-turn prompt as a steer: *"A sendTurn while a prompt is in flight
+is a steer: the agent folds the new prompt into the ongoing work"*
+(`CursorAdapter.ts`), reusing the active turn id. The ACP runtime's internal
+`promptOptions` carries only a `dispatched` deferred, nothing about queueing.
+
+So `steer` is the honest default — it is what T3's UI is describing when you type
+mid-turn. `followUp` is there for anyone who prefers their interruptions to be
+polite.
 
 ## Debugging
 
