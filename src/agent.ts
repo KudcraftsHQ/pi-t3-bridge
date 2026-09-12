@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { buildEffortConfigOption, EFFORT_CONFIG_ID, DEFAULT_EFFORT, normalizeEffort } from "./effort.ts";
+import { allowlistedExtensionPaths } from "./extensions.ts";
 import { StdioConnection } from "./jsonrpc.ts";
 import { recall, remember } from "./sessionStore.ts";
 import { resultContent, toolKind, toolLocations, toolTitle } from "./mapping.ts";
@@ -100,6 +101,7 @@ export function runAgent(options: AgentOptions): void {
       cwd,
       agentDir: getAgentDir(),
       noExtensions: true,
+      additionalExtensionPaths: allowlistedExtensionPaths(),
       extensionFactories: [
         { name: "t3-approvals", factory: (pi: any) => approvals.register(pi) },
       ],

@@ -106,13 +106,35 @@ Two things are worth knowing:
 
 Models that do not reason get no dropdown at all.
 
-## What pi loses
+## Extensions
 
-**Discovered pi extensions are disabled.** pi's extension ecosystem is written for
-its interactive TUI, and several extensions reach for the theme singleton the moment
-a turn starts — outside the TUI that throws and takes the bridge process down
-mid-turn. The bridge loads exactly one inline extension, the approval hook. Skills,
-prompt templates and context files are unaffected.
+**Discovery is off by default.** pi's extension ecosystem is written for its
+interactive TUI, and an extension that reaches for the theme singleton mid-turn (the
+tps-meter does) throws outside it and takes the bridge process down. Skills, prompt
+templates and context files are unaffected.
+
+Some extensions are load-bearing for *correctness*, not display, and those can be
+allowlisted by name:
+
+```json
+"environment": [{ "name": "PI_T3_BRIDGE_EXTENSIONS", "value": "deepseek-peak" }]
+```
+
+A bare name resolves against `~/.pi/agent/extensions/`. Anything with a separator is
+treated as a path.
+
+**`deepseek-peak` is the case that motivated this.** DeepSeek bills at half rate
+outside its peak windows, and pi's `models.json` cost model has no time dimension —
+so without the extension every cost pi records is priced at peak. Measured on the
+same 134-token request:
+
+| | effective input rate |
+|---|---|
+| without the extension | $0.300 / Mtok |
+| with it allowlisted | $0.150 / Mtok |
+
+Only allowlist extensions that guard their UI calls behind `ctx.hasUI`. One that
+does not will crash the bridge mid-turn.
 
 The UI will also say "Cursor", with a Cursor icon and an "Early Access" badge. That
 is cosmetic and unavoidable without a fork.
