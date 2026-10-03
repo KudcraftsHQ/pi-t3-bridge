@@ -13,6 +13,53 @@ T3's health probe, then serves pi over ACP.
 
 **No fork of t3code is required.**
 
+## T3 Code Orchestrator V2 (nightly 2026-10-03 and later)
+
+Under Orchestrator V2 the `cursor` driver is the official Cursor SDK and no
+longer spawns `binaryPath`, so a `cursor_*` instance pointing at this bridge
+reports "Sign in with Cursor" and never starts it. Host the bridge on the
+generic **ACP Registry** driver instead, with an executable override:
+
+```json
+"acp_pi": {
+  "driver": "acpRegistry",
+  "displayName": "pi (ACP bridge)",
+  "enabled": true,
+  "environment": [{ "name": "PI_T3_BRIDGE_EXTENSIONS", "value": "deepseek-peak", "sensitive": false }],
+  "config": {
+    "agentId": "pi-acp",
+    "commandPath": "/home/you/.local/bin/pi-t3-bridge",
+    "customModels": []
+  }
+}
+```
+
+- `agentId` must be a registry entry whose arguments are empty (`pi-acp` is);
+  the bridge treats a bare invocation as an ACP session.
+- The driver only inspects agents against a cached registry index
+  (`~/.t3/caches/acp-registry/registry.json`). T3 writes it when the registry
+  browser in Settings is opened; until then the instance reports "No valid
+  cached ACP Registry index". Opening that dialog once (or saving
+  `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json` there)
+  fixes it.
+- Models come from a `category: "model"` session config option and are
+  switched with `session/set_config_option`; effort stays the `effort` option.
+
+**The `t3-code` MCP server.** V2 hands every ACP session a stdio MCP server
+(`t3 acp-mcp-bridge`) carrying thread launch/read/wait, `delegate_task`,
+`task_status`, worktrees, previews, scheduled tasks and more. pi has no MCP
+client, so the bridge is one (`src/mcp.ts`): it connects every stdio/http
+server in `session/new` / `session/load`, and registers each tool with pi as
+`mcp__<server>__<tool>` (e.g. `mcp__t3-code__delegate_task`). Calls go through
+pi's normal tool pipeline, approvals included. Results over
+`PI_T3_BRIDGE_MCP_MAX_CHARS` (default 100000) are cut inline and written in
+full under `$PI_T3_BRIDGE_SPILL_DIR` (else `$TMPDIR`, else `~/.cache/tmp`) with
+the path in the result. The bridge also exports `T3_ACP_MCP_NODE` /
+`T3_ACP_MCP_ENTRYPOINT` / `T3_ACP_MCP_ENDPOINT` / `T3_ACP_MCP_AUTHORIZATION` to
+pi's tools, so T3's documented `acp-mcp-call` terminal fallback works as well.
+T3's orchestration instructions arrive inside the first prompt
+(`<t3_code_instructions>`), since ACP has no system-prompt field.
+
 ## Install
 
 ```bash
