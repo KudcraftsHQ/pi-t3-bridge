@@ -7,8 +7,8 @@
  * closely enough to pass T3's health probe, then serves pi over ACP.
  *
  * Argv modes:
- *   about [--format json]   health probe
- *   acp                     ACP agent over stdio
+ *   about [--format json]   health probe (T3's legacy Cursor host)
+ *   acp | (no arguments)    ACP agent over stdio
  *
  * T3 may prepend flags before `acp` (`-e <endpoint>` when apiEndpoint is set,
  * and `--auto-review` / `--force` depending on the thread's runtime mode), so
@@ -50,7 +50,11 @@ function main(): void {
     process.exit(0);
   }
 
-  if (argv.includes("acp")) {
+  // T3's generic ACP driver (Orchestrator V2's host for custom agents) spawns
+  // the executable with the registry entry's arguments — none for `pi-acp` —
+  // so a bare invocation is an ACP session too.
+  const bare = argv.filter((arg) => !arg.startsWith("-")).length === 0 && !argv.includes("--help") && !argv.includes("-h") && !argv.includes("--version") && !argv.includes("-v");
+  if (argv.includes("acp") || bare) {
     // In ACP mode stdout is the protocol channel. Anything pi or its
     // dependencies print would corrupt the frame stream, so console output is
     // diverted to stderr for the lifetime of the process.
@@ -78,7 +82,7 @@ function main(): void {
       "",
       "Usage:",
       "  pi-t3-bridge about [--format json]   Health probe (T3 calls this)",
-      "  pi-t3-bridge acp                     Serve ACP over stdio",
+      "  pi-t3-bridge [acp]                   Serve ACP over stdio",
       "",
     ].join("\n"),
   );

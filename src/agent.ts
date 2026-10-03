@@ -19,8 +19,18 @@ import { allowlistedExtensionPaths } from "./extensions.ts";
 import { StdioConnection } from "./jsonrpc.ts";
 import { recall, remember } from "./sessionStore.ts";
 import { resultContent, toolKind, toolLocations, toolTitle } from "./mapping.ts";
+import {
+  connectMcpServers,
+  mcpToolDefinitions,
+  t3FallbackEnvironment,
+  usableMcpServers,
+  type McpConnection,
+} from "./mcp.ts";
 
 const PROTOCOL_VERSION = 1;
+
+/** The ACP config option T3 Code's generic ACP driver reads models from. */
+export const MODEL_CONFIG_ID = "model";
 
 /** Stderr tracing, on when PI_T3_BRIDGE_DEBUG is set. Never touches stdout. */
 function dbg(message: string): void {
@@ -64,6 +74,8 @@ interface ActiveSession {
   unsubscribe: () => void;
   /** Resolvers waiting for the next `agent_settled`. */
   settleWaiters: Array<() => void>;
+  /** MCP servers this session was given; closed with the session. */
+  mcp: McpConnection[];
 }
 
 export function runAgent(options: AgentOptions): void {
@@ -96,6 +108,8 @@ export function runAgent(options: AgentOptions): void {
     agentCapabilities: {
       loadSession: true,
       promptCapabilities: { image: true, embeddedContext: true },
+      // stdio is ACP's baseline and always accepted; http is served too.
+      mcpCapabilities: { http: true, sse: false },
     },
     authMethods: [
       { id: AUTH_METHOD_ID, name: "pi", description: "pi uses its own provider credentials" },
@@ -114,9 +128,22 @@ export function runAgent(options: AgentOptions): void {
    * decides whether this is a fresh session or a resumed one; everything else
    * — the approval hook, event forwarding, effort — is identical either way.
    */
-  async function openSession(id: string, cwd: string, sessionManager: any): Promise<void> {
+  async function openSession(
+    id: string,
+    cwd: string,
+    sessionManager: any,
+    mcpServers: unknown,
+  ): Promise<void> {
     modelRuntime ??= await ModelRuntime.create();
     const approvals = new ApprovalBroker(id, connection, options.autoApprove);
+
+    // T3 Orchestrator V2 injects its `t3-code` MCP server here. Its tools are
+    // registered with pi as real tools; the fallback env makes T3's
+    // documented `acp-mcp-call` terminal route work from pi's bash too.
+    const servers = usableMcpServers(mcpServers);
+    Object.assign(process.env, t3FallbackEnvironment(servers));
+    const mcp = await connectMcpServers(servers, cwd);
+    const mcpTools = mcpToolDefinitions(mcp);
 
     // Discovered extensions are deliberately disabled. pi's extension
     // ecosystem is written for the interactive TUI — several of them (the
@@ -131,6 +158,12 @@ export function runAgent(options: AgentOptions): void {
       additionalExtensionPaths: allowlistedExtensionPaths(),
       extensionFactories: [
         { name: "t3-approvals", factory: (pi: any) => approvals.register(pi) },
+        {
+          name: "t3-mcp",
+          factory: (pi: any) => {
+            for (const tool of mcpTools) pi.registerTool(tool);
+          },
+        },
       ],
     });
     await resourceLoader.reload();
@@ -162,21 +195,31 @@ export function runAgent(options: AgentOptions): void {
       }
     });
 
-    session?.unsubscribe();
-    session = { id, piSession: created.session, unsubscribe, settleWaiters };
+    closeActiveSession();
+    session = { id, piSession: created.session, unsubscribe, settleWaiters, mcp };
 
     const sessionFile = sessionManager.getSessionFile?.();
     if (sessionFile) remember(id, sessionFile, cwd);
   }
 
+  function closeActiveSession(): void {
+    if (!session) return;
+    session.unsubscribe();
+    for (const client of session.mcp) client.close();
+    session = null;
+  }
+  process.once("exit", () => {
+    for (const client of session?.mcp ?? []) client.close();
+  });
+
   connection.on("session/new", async (params: any) => {
     const cwd: string = params?.cwd ?? options.cwd;
     const id = `pi-${Date.now().toString(36)}`;
-    await openSession(id, cwd, SessionManager.create(cwd));
+    await openSession(id, cwd, SessionManager.create(cwd), params?.mcpServers);
     return {
       sessionId: id,
       modes: null,
-      configOptions: [buildEffortConfigOption(activeEffort())],
+      configOptions: await configOptions(),
     };
   });
 
@@ -198,10 +241,10 @@ export function runAgent(options: AgentOptions): void {
       ? SessionManager.open(known.sessionFile, undefined, cwd)
       : SessionManager.continueRecent(cwd);
 
-    await openSession(id, cwd, sessionManager);
+    await openSession(id, cwd, sessionManager, params?.mcpServers);
     return {
       modes: null,
-      configOptions: [buildEffortConfigOption(activeEffort())],
+      configOptions: await configOptions(),
     };
   });
 
@@ -244,8 +287,7 @@ export function runAgent(options: AgentOptions): void {
   });
 
   connection.on("session/close", () => {
-    session?.unsubscribe();
-    session = null;
+    closeActiveSession();
     return {};
   });
 
@@ -260,7 +302,13 @@ export function runAgent(options: AgentOptions): void {
     return {};
   });
 
-  connection.on("session/set_config_option", (params: any) => {
+  connection.on("session/set_config_option", async (params: any) => {
+    if (params?.configId === MODEL_CONFIG_ID && typeof params?.value === "string") {
+      requestedModel = params.value;
+      const model = await resolveModel(params.value);
+      if (model && session) await session.piSession.setModel(model);
+      return { configOptions: await configOptions() };
+    }
     if (params?.configId === EFFORT_CONFIG_ID) {
       const level = normalizeEffort(params?.value);
       if (level) {
@@ -268,8 +316,30 @@ export function runAgent(options: AgentOptions): void {
         session?.piSession.setThinkingLevel(level);
       }
     }
-    return { configOptions: [buildEffortConfigOption(activeEffort())] };
+    return { configOptions: await configOptions() };
   });
+
+  /**
+   * Session config as ACP reports it. T3's generic ACP driver (the one that
+   * hosts the bridge under Orchestrator V2) reads its model picker from a
+   * `category: "model"` select here and switches models with
+   * `session/set_config_option`; there is no other portable model inventory.
+   */
+  async function configOptions(): Promise<unknown[]> {
+    const options: unknown[] = [];
+    try {
+      const current = session?.piSession?.model;
+      const currentSlug = current ? `${current.provider}/${current.id}` : (requestedModel ?? "");
+      const available = (await getRegistry()).getAvailable();
+      if (available.length > 0) {
+        options.push(buildModelConfigOption(available, currentSlug));
+      }
+    } catch (error) {
+      dbg(`model catalog unavailable: ${String(error)}`);
+    }
+    options.push(buildEffortConfigOption(activeEffort()));
+    return options;
+  }
 
   /**
    * The level pi actually settled on, which is not always the one asked for:
@@ -318,6 +388,27 @@ export function runAgent(options: AgentOptions): void {
  * bookkeeping — a turn can settle between the check and the call. pi's refusal
  * is authoritative, so it is also treated as a signal rather than an error.
  */
+export function buildModelConfigOption(
+  available: ReadonlyArray<{ provider: string; id: string; name?: string }>,
+  currentSlug: string,
+) {
+  const choices = available.map((model) => ({
+    value: `${model.provider}/${model.id}`,
+    name: `${model.name ?? model.id} (${model.provider})`,
+  }));
+  const current = choices.some((choice) => choice.value === currentSlug)
+    ? currentSlug
+    : (choices[0]?.value ?? "");
+  return {
+    id: MODEL_CONFIG_ID,
+    name: "Model",
+    category: "model",
+    type: "select" as const,
+    currentValue: current,
+    options: choices,
+  };
+}
+
 async function promptWithSteerFallback(
   piSession: any,
   text: string,
